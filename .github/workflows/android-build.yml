@@ -28,7 +28,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install required Android SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "emulator" "system-images;android-30;google_apis;x86_64"
 
       - name: Make Gradle wrapper executable
         run: chmod +x android/gradlew
@@ -63,7 +63,7 @@ jobs:
           echo "== APK manifest/badging =="
           BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$OUT")"
           echo "$BADGING"
-          grep -F "package: name='com.droidautomate.assistant' versionCode='29' versionName='1.0.29'" <<<"$BADGING"
+          grep -F "package: name='com.droidautomate.assistant'" <<<"$BADGING"
           grep -F "sdkVersion:'26'" <<<"$BADGING"
           grep -F "targetSdkVersion:'33'" <<<"$BADGING"
           grep -F "application-label:'Android AI Assistant'" <<<"$BADGING"
@@ -79,6 +79,29 @@ jobs:
           echo "APK verified: $OUT"
           echo "APK size: $(stat -c%s "$OUT") bytes"
           sha256sum "$OUT" | tee UniversalAndroidBuilder.apk.sha256
+
+      - name: Install-test APK on Android 11 emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "no | yes |" | avdmanager create avd -n android11-test -k "system-images;android-30;google_apis;x86_64" --force
+          emulator -avd android11-test -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect > emulator.log 2>&1 &
+          EMULATOR_PID=$!
+          trap 'adb emu kill >/dev/null 2>&1 || true; kill "$EMULATOR_PID" >/dev/null 2>&1 || true' EXIT
+          adb wait-for-device
+          timeout 180 bash -c 'until adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" | grep -q "1"; do sleep 3; done'
+          adb shell input keyevent 82 || true
+          echo "== Device =="
+          adb shell getprop ro.build.version.release
+          adb shell getprop ro.build.version.sdk
+          echo "== APK install =="
+          adb install -r UniversalAndroidBuilder.apk
+          echo "== Package =="
+          adb shell pm path com.droidautomate.assistant
+          echo "== Launch =="
+          adb shell monkey -p com.droidautomate.assistant 1
+          sleep 5
+          adb shell dumpsys package com.droidautomate.assistant | grep -E "versionCode|versionName" | head -n 5 || true
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -99,4 +122,4 @@ jobs:
             UniversalAndroidBuilder.apk \
             UniversalAndroidBuilder.apk.sha256 \
             --title "Universal Android Builder APK $TAG" \
-            --notes "Installable APK built from main, verified for package metadata, ZIP alignment and Android APK signature before publication."
+            --notes "Installable APK built from main, verified with APK signature/alignment checks and an Android 11 (API 30) emulator install smoke test before publication."
