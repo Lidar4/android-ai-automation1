@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Android AI Assistant</string>
+    <string name="bridge_connected">AndroidBridge Connected</string>
+    <string name="simulation_warning">Running in Simulator Mode</string>
+</resources>

@@ -1,0 +1,7 @@
+{
+  "name": "Android AI Automation Assistant Architecture",
+  "description": "Comprehensive architectural guide, production boilerplate code, and live interactive simulation for building an Android automation assistant using Shizuku, Accessibility Service, and Gemini AI Function Calling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
