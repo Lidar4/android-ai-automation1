@@ -4,7 +4,6 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -78,12 +77,8 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (!offlineFallbackShown && webView.canGoBack()) {
-                    webView.goBack()
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
-                }
+                if (!offlineFallbackShown && webView.canGoBack()) webView.goBack()
+                else { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
             }
         })
         loadWebControlCenter()
@@ -100,32 +95,20 @@ class MainActivity : AppCompatActivity() {
         settings.setSupportZoom(false)
         settings.builtInZoomControls = false
         settings.displayZoomControls = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-        }
-        settings.userAgentString = "${settings.userAgentString} DroidAutomateBridge/1.0.0 (Android Native APK)"
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        settings.userAgentString = "${settings.userAgentString} DroidAutomateBridge/1.1.0 (Android Native APK)"
 
         val bridge = AndroidBridge(this, webView)
         webView.addJavascriptInterface(bridge, "androidBridge")
-
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                if (!offlineFallbackShown) {
-                    progressBar.visibility = View.VISIBLE
-                    errorContainer.visibility = View.GONE
-                }
+                if (!offlineFallbackShown) { progressBar.visibility = View.VISIBLE; errorContainer.visibility = View.GONE }
                 super.onPageStarted(view, url, favicon)
             }
-
             override fun onPageFinished(view: WebView?, url: String?) {
-                if (!offlineFallbackShown) {
-                    progressBar.visibility = View.GONE
-                    errorContainer.visibility = View.GONE
-                    remoteLoadTimedOut = false
-                }
+                if (!offlineFallbackShown) { progressBar.visibility = View.GONE; errorContainer.visibility = View.GONE; remoteLoadTimedOut = false }
                 super.onPageFinished(view, url)
             }
-
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                 if (request?.isForMainFrame == true && !offlineFallbackShown) {
                     Log.w(TAG, "Remote Control Center failed: ${error?.description}")
@@ -133,27 +116,20 @@ class MainActivity : AppCompatActivity() {
                 }
                 super.onReceivedError(view, request, error)
             }
-
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val uri = request?.url ?: return true
                 if (uri.scheme != "https") return true
                 val trusted = Uri.parse(WEB_APP_URL)
-                val sameOrigin = uri.scheme == trusted.scheme &&
-                    uri.host == trusted.host &&
+                val sameOrigin = uri.scheme == trusted.scheme && uri.host == trusted.host &&
                     (uri.port.takeIf { it != -1 } ?: 443) == (trusted.port.takeIf { it != -1 } ?: 443)
                 return !sameOrigin
             }
         }
-
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                if (!offlineFallbackShown) {
-                    progressBar.progress = newProgress
-                    if (newProgress >= 100) progressBar.visibility = View.GONE
-                }
+                if (!offlineFallbackShown) { progressBar.progress = newProgress; if (newProgress >= 100) progressBar.visibility = View.GONE }
                 super.onProgressChanged(view, newProgress)
             }
-
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                 Log.d(TAG, "[WebView Console] ${consoleMessage?.message()}")
                 return true
@@ -165,20 +141,14 @@ class MainActivity : AppCompatActivity() {
         offlineFallbackShown = false
         remoteLoadTimedOut = false
         val uri = Uri.parse(WEB_APP_URL)
-        if (uri.scheme != "https" || uri.host.isNullOrBlank()) {
-            showOfflineFallback("Invalid online Control Center URL. Offline-safe native mode is active.")
-            return
-        }
-
+        if (uri.scheme != "https" || uri.host.isNullOrBlank()) { showOfflineFallback("Invalid online Control Center URL."); return }
         progressBar.visibility = View.VISIBLE
         errorContainer.visibility = View.GONE
         webView.loadUrl(WEB_APP_URL)
-
         mainHandler.removeCallbacksAndMessages(null)
         mainHandler.postDelayed({
             if (!offlineFallbackShown && !remoteLoadTimedOut) {
                 remoteLoadTimedOut = true
-                Log.w(TAG, "Remote Control Center timed out after ${REMOTE_LOAD_TIMEOUT_MS}ms")
                 showOfflineFallback("Online Control Center did not respond in time. Offline-safe native mode is active.")
             }
         }, REMOTE_LOAD_TIMEOUT_MS)
@@ -197,15 +167,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkAndRequestPermissions() {
         val required = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            required.add(Manifest.permission.CAMERA)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            required.add(Manifest.permission.RECORD_AUDIO)
-        }
-        if (required.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, required.toTypedArray(), PERMISSION_REQUEST_CODE)
-        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) required.add(Manifest.permission.CAMERA)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) required.add(Manifest.permission.RECORD_AUDIO)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECEIVE_SMS) != PackageManager.PERMISSION_GRANTED) required.add(Manifest.permission.RECEIVE_SMS)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) required.add(Manifest.permission.SEND_SMS)
+        if (required.isNotEmpty()) ActivityCompat.requestPermissions(this, required.toTypedArray(), PERMISSION_REQUEST_CODE)
     }
 
     override fun onDestroy() {
