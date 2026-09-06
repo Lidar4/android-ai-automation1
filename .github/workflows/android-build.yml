@@ -8,6 +8,7 @@ on:
     types: [published]
 
 env:
+  GCP_PROJECT_ID: gen-lang-client-0604789111
   GCP_REGION: asia-southeast1
   CLOUD_RUN_SERVICE: droidautomate-assistant
 
@@ -18,8 +19,6 @@ jobs:
   build-deploy:
     name: Build, Deploy Web + Verify Android
     runs-on: ubuntu-latest
-    env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -46,24 +45,23 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Validate GCP configuration
+      - name: Validate GCP service account secret
         shell: bash
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          test -n "$GCP_PROJECT_ID" || { echo "GCP_PROJECT_ID repository variable is missing"; exit 1; }
           test -n "$GCP_SA_KEY" || { echo "GCP_SA_KEY repository secret is missing"; exit 1; }
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-          project_id: ${{ vars.GCP_PROJECT_ID }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Deploy Web + Backend to Cloud Run
         run: |
@@ -125,14 +123,6 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
-
-      - name: Upload Cloud Run URL metadata
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-metadata
-          path: |
-            /tmp/nonexistent
-          if-no-files-found: ignore
 
   release:
     name: Publish GitHub Release
