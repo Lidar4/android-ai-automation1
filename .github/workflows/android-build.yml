@@ -40,20 +40,42 @@ jobs:
         working-directory: android
         run: ./gradlew clean assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK is installable and signed
+      - name: Verify APK package, alignment and signature
         shell: bash
         run: |
           set -euo pipefail
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
           OUT="UniversalAndroidBuilder.apk"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
 
           test -s "$APK"
           cp "$APK" "$OUT"
 
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
-          test -x "$APKSIGNER"
-          "$APKSIGNER" verify --verbose "$OUT"
+          echo "== ZIP integrity =="
+          unzip -t "$OUT" >/dev/null
 
+          echo "== ZIP alignment =="
+          "$BUILD_TOOLS/zipalign" -c -P 16 -v 4 "$OUT"
+
+          echo "== APK signature =="
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$OUT"
+
+          echo "== APK manifest/badging =="
+          BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$OUT")"
+          echo "$BADGING"
+          grep -F "package: name='com.droidautomate.assistant' versionCode='29' versionName='1.0.29'" <<<"$BADGING"
+          grep -F "sdkVersion:'26'" <<<"$BADGING"
+          grep -F "targetSdkVersion:'33'" <<<"$BADGING"
+          grep -F "application-label:'Android AI Assistant'" <<<"$BADGING"
+          grep -F "application-icon:" <<<"$BADGING"
+
+          echo "== Forbidden Android 14-only specialUse entries =="
+          if "$BUILD_TOOLS/aapt2" dump xmltree "$OUT" AndroidManifest.xml | grep -E "FOREGROUND_SERVICE_SPECIAL_USE|specialUse|PROPERTY_SPECIAL_USE_FGS_SUBTYPE"; then
+            echo "ERROR: Android 14-only specialUse manifest entry is present"
+            exit 1
+          fi
+
+          echo "== APK summary =="
           echo "APK verified: $OUT"
           echo "APK size: $(stat -c%s "$OUT") bytes"
           sha256sum "$OUT" | tee UniversalAndroidBuilder.apk.sha256
@@ -77,4 +99,4 @@ jobs:
             UniversalAndroidBuilder.apk \
             UniversalAndroidBuilder.apk.sha256 \
             --title "Universal Android Builder APK $TAG" \
-            --notes "Installable APK built from main, verified with Android apksigner, and published as a direct APK release asset."
+            --notes "Installable APK built from main, verified for package metadata, ZIP alignment and Android APK signature before publication."
