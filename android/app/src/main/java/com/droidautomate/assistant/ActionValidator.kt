@@ -7,32 +7,17 @@ data class ActionValidationResult(
     val tool: String,
     val sanitizedArgs: JSONObject,
     val requiresConfirmation: Boolean,
-    val riskLevel: String, // "LOW", "MEDIUM", "HIGH"
+    val riskLevel: String,
     val requiredPermission: String? = null,
     val errorCode: String? = null,
     val errorMessage: String? = null
 )
 
-/**
- * Android Central Action Validator
- * Strict gatekeeper running on the native Android side.
- * AI output is NEVER trusted blindly.
- */
 object ActionValidator {
-
     private val ALLOWED_TOOLS = setOf(
-        "set_brightness",
-        "open_wifi_settings",
-        "open_bluetooth_settings",
-        "open_app_settings",
-        "set_volume",
-        "toggle_flashlight",
-        "toggle_battery_saver",
-        "toggle_do_not_disturb",
-        "clear_own_cache",
-        "get_device_info",
-        "get_battery_status",
-        "get_network_status"
+        "set_brightness", "open_wifi_settings", "open_bluetooth_settings", "open_app_settings",
+        "set_volume", "toggle_flashlight", "toggle_battery_saver", "toggle_do_not_disturb",
+        "clear_own_cache", "get_device_info", "get_battery_status", "get_network_status"
     )
 
     private val EXPLICITLY_PROHIBITED_PATTERNS = listOf(
@@ -41,160 +26,52 @@ object ActionValidator {
 
     fun validate(tool: String, args: JSONObject): ActionValidationResult {
         val normalizedTool = tool.trim().lowercase()
-
-        // 1. Allowlist containment check
         if (!ALLOWED_TOOLS.contains(normalizedTool)) {
-            val isExplicitlyProhibited = EXPLICITLY_PROHIBITED_PATTERNS.any { normalizedTool.contains(it) } ||
-                    normalizedTool.split("_", "-", " ", "/").any { it == "sh" || it == "su" }
-
-            return ActionValidationResult(
-                valid = false,
-                tool = tool,
-                sanitizedArgs = args,
-                requiresConfirmation = false,
-                riskLevel = "HIGH",
-                errorCode = "ACTION_NOT_ALLOWED",
-                errorMessage = if (isExplicitlyProhibited) {
-                    "Execution of arbitrary shell, system or root commands is strictly prohibited."
-                } else {
-                    "Action '$tool' is not in the allowed device automation registry."
-                }
-            )
+            val prohibited = EXPLICITLY_PROHIBITED_PATTERNS.any { normalizedTool.contains(it) } ||
+                normalizedTool.split("_", "-", " ", "/").any { it == "sh" || it == "su" }
+            return ActionValidationResult(false, tool, args, false, "HIGH", errorCode = "ACTION_NOT_ALLOWED",
+                errorMessage = if (prohibited) "Execution of arbitrary shell, system or root commands is strictly prohibited."
+                else "Action '$tool' is not in the allowed device automation registry.")
         }
 
-        // 3. Argument schema & boundary checks
         val sanitized = JSONObject()
-
         when (normalizedTool) {
             "set_brightness" -> {
-                if (!args.has("level")) {
-                    return ActionValidationResult(
-                        valid = false,
-                        tool = normalizedTool,
-                        sanitizedArgs = args,
-                        requiresConfirmation = false,
-                        riskLevel = "LOW",
-                        errorCode = "INVALID_ARGUMENTS",
-                        errorMessage = "Property 'level' (0-100) is required for brightness adjustment."
-                    )
-                }
+                if (!args.has("level") || args.opt("level") !is Number) return invalid(normalizedTool, "Property 'level' (1-100) must be an integer.")
                 val level = args.optInt("level", -1)
-                if (level < 0 || level > 100) {
-                    return ActionValidationResult(
-                        valid = false,
-                        tool = normalizedTool,
-                        sanitizedArgs = args,
-                        requiresConfirmation = false,
-                        riskLevel = "LOW",
-                        errorCode = "INVALID_ARGUMENTS",
-                        errorMessage = "Brightness level must be an integer between 0 and 100. Received: $level"
-                    )
-                }
+                if (level !in 1..100) return invalid(normalizedTool, "Brightness level must be an integer between 1 and 100. Received: $level")
                 sanitized.put("level", level)
-                return ActionValidationResult(
-                    valid = true,
-                    tool = normalizedTool,
-                    sanitizedArgs = sanitized,
-                    requiresConfirmation = false,
-                    riskLevel = "LOW",
-                    requiredPermission = "android.permission.WRITE_SETTINGS"
-                )
+                return ActionValidationResult(true, normalizedTool, sanitized, false, "LOW", "android.permission.WRITE_SETTINGS")
             }
-
             "set_volume" -> {
-                if (!args.has("level")) {
-                    return ActionValidationResult(
-                        valid = false,
-                        tool = normalizedTool,
-                        sanitizedArgs = args,
-                        requiresConfirmation = false,
-                        riskLevel = "LOW",
-                        errorCode = "INVALID_ARGUMENTS",
-                        errorMessage = "Property 'level' (0-100) is required for volume adjustment."
-                    )
-                }
+                if (!args.has("level") || args.opt("level") !is Number) return invalid(normalizedTool, "Property 'level' (0-100) must be an integer.")
                 val level = args.optInt("level", -1)
-                if (level < 0 || level > 100) {
-                    return ActionValidationResult(
-                        valid = false,
-                        tool = normalizedTool,
-                        sanitizedArgs = args,
-                        requiresConfirmation = false,
-                        riskLevel = "LOW",
-                        errorCode = "INVALID_ARGUMENTS",
-                        errorMessage = "Volume level must be an integer between 0 and 100. Received: $level"
-                    )
-                }
-                val streamType = args.optString("streamType", "MEDIA").uppercase()
+                if (level !in 0..100) return invalid(normalizedTool, "Volume level must be an integer between 0 and 100. Received: $level")
+                val streamType = args.optString("stream_type", args.optString("streamType", "MEDIA")).uppercase()
+                val allowedStreams = setOf("MEDIA", "RING", "ALARM", "NOTIFICATION", "SYSTEM", "VOICE_CALL")
+                if (streamType !in allowedStreams) return invalid(normalizedTool, "Unsupported stream_type: $streamType")
                 sanitized.put("level", level)
-                sanitized.put("streamType", streamType)
-                return ActionValidationResult(
-                    valid = true,
-                    tool = normalizedTool,
-                    sanitizedArgs = sanitized,
-                    requiresConfirmation = false,
-                    riskLevel = "LOW"
-                )
+                sanitized.put("stream_type", streamType)
+                return ActionValidationResult(true, normalizedTool, sanitized, false, "LOW")
             }
-
             "toggle_flashlight" -> {
-                val enabled = args.optBoolean("enabled", true)
-                sanitized.put("enabled", enabled)
-                return ActionValidationResult(
-                    valid = true,
-                    tool = normalizedTool,
-                    sanitizedArgs = sanitized,
-                    requiresConfirmation = false,
-                    riskLevel = "LOW",
-                    requiredPermission = "android.permission.CAMERA"
-                )
+                sanitized.put("enabled", args.optBoolean("enabled", true))
+                return ActionValidationResult(true, normalizedTool, sanitized, false, "LOW", "android.permission.CAMERA")
             }
-
             "toggle_do_not_disturb" -> {
-                val enabled = args.optBoolean("enabled", true)
-                sanitized.put("enabled", enabled)
-                return ActionValidationResult(
-                    valid = true,
-                    tool = normalizedTool,
-                    sanitizedArgs = sanitized,
-                    requiresConfirmation = true,
-                    riskLevel = "MEDIUM",
-                    requiredPermission = "android.permission.ACCESS_NOTIFICATION_POLICY"
-                )
+                sanitized.put("enabled", args.optBoolean("enabled", true))
+                return ActionValidationResult(true, normalizedTool, sanitized, true, "MEDIUM", "android.permission.ACCESS_NOTIFICATION_POLICY")
             }
-
             "toggle_battery_saver" -> {
-                val enabled = args.optBoolean("enabled", true)
-                sanitized.put("enabled", enabled)
-                return ActionValidationResult(
-                    valid = true,
-                    tool = normalizedTool,
-                    sanitizedArgs = sanitized,
-                    requiresConfirmation = false,
-                    riskLevel = "LOW"
-                )
+                sanitized.put("enabled", args.optBoolean("enabled", true))
+                return ActionValidationResult(true, normalizedTool, sanitized, false, "LOW")
             }
-
-            "clear_own_cache" -> {
-                return ActionValidationResult(
-                    valid = true,
-                    tool = normalizedTool,
-                    sanitizedArgs = sanitized,
-                    requiresConfirmation = true,
-                    riskLevel = "MEDIUM"
-                )
-            }
-
-            else -> {
-                // Info tools & settings intent shortcuts
-                return ActionValidationResult(
-                    valid = true,
-                    tool = normalizedTool,
-                    sanitizedArgs = sanitized,
-                    requiresConfirmation = false,
-                    riskLevel = "LOW"
-                )
-            }
+            "clear_own_cache" -> return ActionValidationResult(true, normalizedTool, sanitized, true, "MEDIUM")
+            else -> return ActionValidationResult(true, normalizedTool, sanitized, false, "LOW")
         }
     }
+
+    private fun invalid(tool: String, message: String) = ActionValidationResult(
+        false, tool, JSONObject(), false, "LOW", errorCode = "INVALID_ARGUMENTS", errorMessage = message
+    )
 }
