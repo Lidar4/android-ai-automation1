@@ -67,12 +67,21 @@ jobs:
           grep -F "sdkVersion:'26'" <<<"$BADGING"
           grep -F "targetSdkVersion:'33'" <<<"$BADGING"
           grep -F "application-label:'Android AI Assistant'" <<<"$BADGING"
-          grep -F "application-icon:" <<<"$BADGING"
+          grep -F "application-icon-" <<<"$BADGING"
 
           echo "== Forbidden Android 14-only specialUse entries =="
-          if "$BUILD_TOOLS/aapt2" dump xmltree "$OUT" AndroidManifest.xml | grep -E "FOREGROUND_SERVICE_SPECIAL_USE|specialUse|PROPERTY_SPECIAL_USE_FGS_SUBTYPE"; then
+          XMLTREE="$("$BUILD_TOOLS/aapt2" dump xmltree "$OUT" AndroidManifest.xml)"
+          if grep -E "FOREGROUND_SERVICE_SPECIAL_USE|PROPERTY_SPECIAL_USE_FGS_SUBTYPE|android:foregroundServiceType.*specialUse" <<<"$XMLTREE"; then
             echo "ERROR: Android 14-only specialUse manifest entry is present"
             exit 1
+          fi
+
+          echo "== APK ABI check =="
+          if unzip -l "$OUT" | grep -qE '(^|[[:space:]])lib/'; then
+            echo "Native libraries found in APK:"
+            unzip -l "$OUT" | grep -E 'lib/[^/]+/'
+          else
+            echo "No native libraries in APK; ABI-independent."
           fi
 
           echo "== APK summary =="
@@ -85,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "no | yes |" | avdmanager create avd -n android11-test -k "system-images;android-30;google_apis;x86_64" --force
-          emulator -avd android11-test -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect > emulator.log 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -avd android11-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > emulator.log 2>&1 &
           EMULATOR_PID=$!
           trap 'adb emu kill >/dev/null 2>&1 || true; kill "$EMULATOR_PID" >/dev/null 2>&1 || true' EXIT
           adb wait-for-device
@@ -94,8 +103,19 @@ jobs:
           echo "== Device =="
           adb shell getprop ro.build.version.release
           adb shell getprop ro.build.version.sdk
-          echo "== APK install =="
-          adb install -r UniversalAndroidBuilder.apk
+          echo "== Clean install =="
+          adb shell pm uninstall com.droidautomate.assistant >/dev/null 2>&1 || true
+          set +e
+          INSTALL_OUTPUT="$(adb install UniversalAndroidBuilder.apk 2>&1)"
+          INSTALL_EXIT=$?
+          set -e
+          echo "$INSTALL_OUTPUT"
+          if [ "$INSTALL_EXIT" -ne 0 ]; then
+            echo "== Package installer diagnostics =="
+            adb shell dumpsys package com.droidautomate.assistant | head -120 || true
+            adb logcat -d -t 500 | grep -Ei "PackageInstaller|PackageManager|INSTALL_FAILED|com.droidautomate.assistant" | tail -n 120 || true
+            exit "$INSTALL_EXIT"
+          fi
           echo "== Package =="
           adb shell pm path com.droidautomate.assistant
           echo "== Launch =="
