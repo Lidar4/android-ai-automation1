@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-apk:
-    name: Build APK
+    name: Build, Verify and Publish APK
     runs-on: ubuntu-latest
 
     steps:
@@ -22,6 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -37,19 +38,43 @@ jobs:
 
       - name: Build Debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew clean assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK
+      - name: Verify APK is installable and signed
+        shell: bash
         run: |
+          set -euo pipefail
           APK="android/app/build/outputs/apk/debug/app-debug.apk"
-          test -f "$APK"
-          ls -lh "$APK"
-          sha256sum "$APK"
+          OUT="UniversalAndroidBuilder.apk"
 
-      - name: Upload APK
+          test -s "$APK"
+          cp "$APK" "$OUT"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$OUT"
+
+          echo "APK verified: $OUT"
+          echo "APK size: $(stat -c%s "$OUT") bytes"
+          sha256sum "$OUT" | tee UniversalAndroidBuilder.apk.sha256
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: android-installable-apk
+          path: |
+            UniversalAndroidBuilder.apk
+            UniversalAndroidBuilder.apk.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish direct-download GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-v${{ github.run_number }}"
+          gh release create "$TAG" \
+            UniversalAndroidBuilder.apk \
+            UniversalAndroidBuilder.apk.sha256 \
+            --title "Universal Android Builder APK $TAG" \
+            --notes "Installable APK built from main, verified with Android apksigner, and published as a direct APK release asset."
