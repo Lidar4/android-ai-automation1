@@ -21,7 +21,7 @@ android {
         }
 
         // Configurable Web Control Center URL without exposing any secrets
-        val defaultWebUrl = "https://ais-dev-lxuoncy2qvlxpgov2up2up6ia-274210056589.asia-southeast1.run.app"
+        val defaultWebUrl = "https://ais-dev-lxuoncy2qvlxpgov2up6ia-274210056589.asia-southeast1.run.app"
         val resolvedWebUrl = (project.findProperty("WEB_APP_URL") as? String)?.takeIf { it.isNotBlank() } ?: defaultWebUrl
         buildConfigField("String", "WEB_APP_URL", "\"$resolvedWebUrl\"")
     }
