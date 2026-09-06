@@ -11,12 +11,7 @@ import android.webkit.WebView
 import org.json.JSONObject
 import java.util.Locale
 
-/**
- * AndroidBridge
- * Injected as `window.androidBridge` into the WebView.
- * Exposes ONLY validated, controlled methods.
- * Strictest isolation: No Runtime.exec(), no reflection, no shell commands.
- */
+/** AndroidBridge exposes only validated, controlled native operations. */
 class AndroidBridge(
     private val activity: Activity,
     private val webView: WebView
@@ -24,142 +19,111 @@ class AndroidBridge(
     private val executor = DeviceActionExecutor(activity)
     private var speechRecognizer: SpeechRecognizer? = null
 
-    /**
-     * Primary controlled execution entry point for web control center.
-     */
     @JavascriptInterface
     fun execute(tool: String, argumentsJson: String): String {
         return try {
             val args = if (argumentsJson.isNotBlank()) JSONObject(argumentsJson) else JSONObject()
-
-            // 1. Central Native Action Validation
             val validation = ActionValidator.validate(tool, args)
-
             if (!validation.valid) {
-                val errorJson = JSONObject().apply {
+                return JSONObject().apply {
                     put("success", false)
                     put("tool", tool)
-                    val err = JSONObject().apply {
+                    put("error", JSONObject().apply {
                         put("code", validation.errorCode ?: "ACTION_NOT_ALLOWED")
                         put("message", validation.errorMessage ?: "Action validation failed.")
-                    }
-                    put("error", err)
+                    })
                     put("errorCode", validation.errorCode ?: "ACTION_NOT_ALLOWED")
                     put("message", validation.errorMessage ?: "Action validation failed.")
                     put("source", "android_bridge")
                     put("timestamp", System.currentTimeMillis())
-                }
-                return errorJson.toString()
+                }.toString()
             }
-
-            // 2. Dispatch to DeviceActionExecutor
-            val result = executor.execute(validation.tool, validation.sanitizedArgs)
-            result.toString()
+            executor.execute(validation.tool, validation.sanitizedArgs).toString()
         } catch (e: Exception) {
-            val fatalError = JSONObject().apply {
+            JSONObject().apply {
                 put("success", false)
                 put("tool", tool)
-                val err = JSONObject().apply {
+                put("error", JSONObject().apply {
                     put("code", "BRIDGE_INTERNAL_ERROR")
                     put("message", "Bridge execution caught exception: ${e.message}")
-                }
-                put("error", err)
+                })
                 put("errorCode", "BRIDGE_INTERNAL_ERROR")
                 put("message", "Bridge execution caught exception: ${e.message}")
                 put("source", "android_bridge")
                 put("timestamp", System.currentTimeMillis())
-            }
-            fatalError.toString()
+            }.toString()
         }
     }
 
-    /**
-     * Confirms real device connection from WebView.
-     */
     @JavascriptInterface
-    fun isDeviceConnected(): Boolean {
-        return true
+    fun isDeviceConnected(): Boolean = true
+
+    @JavascriptInterface
+    fun getDeviceInfo(): String = DeviceInfoProvider.getDeviceInfo(activity).toString()
+
+    /** Configure a local, explicit SMS auto-reply rule. */
+    @JavascriptInterface
+    fun setSmsAutoReply(enabled: Boolean, template: String, senderFilter: String): String {
+        return try {
+            AutoReplyManager.setSmsRule(activity, enabled, template, senderFilter)
+            JSONObject().apply {
+                put("success", true)
+                put("message", if (enabled) "SMS auto-reply enabled." else "SMS auto-reply disabled.")
+                put("rule", AutoReplyManager.getSmsRule(activity))
+            }.toString()
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("success", false)
+                put("errorCode", "INVALID_AUTOMATION_RULE")
+                put("message", e.message ?: "Could not save automation rule.")
+            }.toString()
+        }
     }
 
-    /**
-     * Securely queries hardware and OS telemetry.
-     */
     @JavascriptInterface
-    fun getDeviceInfo(): String {
-        return DeviceInfoProvider.getDeviceInfo(activity).toString()
-    }
+    fun getSmsAutoReply(): String = AutoReplyManager.getSmsRule(activity).toString()
 
-    /**
-     * Voice-ready speech recognition bridge.
-     */
     @JavascriptInterface
     fun startSpeechRecognition() {
         activity.runOnUiThread {
             try {
-                if (speechRecognizer == null) {
-                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(activity)
-                }
-
+                if (speechRecognizer == null) speechRecognizer = SpeechRecognizer.createSpeechRecognizer(activity)
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "bn-BD")
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 }
-
                 speechRecognizer?.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {}
                     override fun onBeginningOfSpeech() {}
                     override fun onRmsChanged(rmsdB: Float) {}
                     override fun onBufferReceived(buffer: ByteArray?) {}
                     override fun onEndOfSpeech() {}
-                    override fun onError(error: Int) {
-                        dispatchSpeechResult("", isFinal = true, error = "Speech recognition error code: $error")
-                    }
-
+                    override fun onError(error: Int) { dispatchSpeechResult("", true, "Speech recognition error code: $error") }
                     override fun onResults(results: Bundle?) {
-                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        val text = matches?.firstOrNull() ?: ""
-                        dispatchSpeechResult(text, isFinal = true)
+                        dispatchSpeechResult(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: "", true)
                     }
-
                     override fun onPartialResults(partialResults: Bundle?) {
-                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        val text = matches?.firstOrNull() ?: ""
-                        if (text.isNotEmpty()) {
-                            dispatchSpeechResult(text, isFinal = false)
-                        }
+                        partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let { if (it.isNotEmpty()) dispatchSpeechResult(it, false) }
                     }
-
                     override fun onEvent(eventType: Int, params: Bundle?) {}
                 })
-
                 speechRecognizer?.startListening(intent)
-            } catch (e: Exception) {
-                dispatchSpeechResult("", isFinal = true, error = e.message)
-            }
+            } catch (e: Exception) { dispatchSpeechResult("", true, e.message) }
         }
     }
 
     @JavascriptInterface
     fun stopSpeechRecognition() {
-        activity.runOnUiThread {
-            try {
-                speechRecognizer?.stopListening()
-            } catch (e: Exception) {
-                // Ignore cleanup errors
-            }
-        }
+        activity.runOnUiThread { try { speechRecognizer?.stopListening() } catch (_: Exception) {} }
     }
 
     private fun dispatchSpeechResult(text: String, isFinal: Boolean, error: String? = null) {
-        val safeText = JSONObject.quote(text)
         val js = if (error != null) {
-            "window.__onAndroidSpeechError && window.__onAndroidSpeechError('${JSONObject.quote(error)}');"
+            "window.__onAndroidSpeechError && window.__onAndroidSpeechError(${JSONObject.quote(error)});"
         } else {
-            "window.__onAndroidSpeechResult && window.__onAndroidSpeechResult($safeText, $isFinal);"
+            "window.__onAndroidSpeechResult && window.__onAndroidSpeechResult(${JSONObject.quote(text)}, $isFinal);"
         }
-        activity.runOnUiThread {
-            webView.evaluateJavascript(js, null)
-        }
+        activity.runOnUiThread { webView.evaluateJavascript(js, null) }
     }
 }
