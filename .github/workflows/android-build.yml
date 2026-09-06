@@ -48,10 +48,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install Web Dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Build Web Application
         run: npm run build
@@ -67,8 +66,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Production deployment is enabled for main/tags. It requires one-time
-      # GitHub configuration: GCP_SA_KEY secret and GCP_PROJECT_ID variable.
+      # Production deployment requires one-time GitHub configuration:
+      # GCP_SA_KEY secret and GCP_PROJECT_ID repository variable.
       - name: Authenticate to Google Cloud
         if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
         uses: google-github-actions/auth@v2
@@ -92,48 +91,30 @@ jobs:
             echo "::error::GitHub Actions variable GCP_PROJECT_ID is not configured."
             exit 1
           fi
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::warning::GEMINI_API_KEY secret is not configured. The deployed app will use its safe fallback planner."
-          fi
-
           gcloud config set project "$GCP_PROJECT_ID"
 
-          ENV_ARGS=""
+          DEPLOY_ARGS=(
+            --source .
+            --region "$GCP_REGION"
+            --platform managed
+            --allow-unauthenticated
+            --port 3000
+          )
           if [ -n "$GEMINI_API_KEY" ]; then
-            ENV_ARGS="--set-env-vars=GEMINI_API_KEY=$GEMINI_API_KEY"
+            DEPLOY_ARGS+=(--set-env-vars "GEMINI_API_KEY=$GEMINI_API_KEY")
           fi
           if [ -n "$GEMINI_MODEL" ]; then
-            if [ -n "$ENV_ARGS" ]; then
-              ENV_ARGS="$ENV_ARGS,GEMINI_MODEL=$GEMINI_MODEL"
-            else
-              ENV_ARGS="--set-env-vars=GEMINI_MODEL=$GEMINI_MODEL"
-            fi
+            DEPLOY_ARGS+=(--set-env-vars "GEMINI_MODEL=$GEMINI_MODEL")
           fi
 
-          if [ -n "$ENV_ARGS" ]; then
-            SERVICE_URL=$(gcloud run deploy "$CLOUD_RUN_SERVICE" \
-              --source . \
-              --region "$GCP_REGION" \
-              --platform managed \
-              --allow-unauthenticated \
-              --port 3000 \
-              "$ENV_ARGS" \
-              --format='value(status.url)')
-          else
-            SERVICE_URL=$(gcloud run deploy "$CLOUD_RUN_SERVICE" \
-              --source . \
-              --region "$GCP_REGION" \
-              --platform managed \
-              --allow-unauthenticated \
-              --port 3000 \
-              --format='value(status.url)')
-          fi
+          SERVICE_URL=$(gcloud run deploy "$CLOUD_RUN_SERVICE" \
+            "${DEPLOY_ARGS[@]}" \
+            --format='value(status.url)')
 
           if [ -z "$SERVICE_URL" ]; then
             echo "::error::Cloud Run did not return a service URL."
             exit 1
           fi
-
           echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed production Web + Backend: $SERVICE_URL"
 
@@ -185,15 +166,11 @@ jobs:
           if [ -z "$WEB_URL" ]; then
             WEB_URL="$DEPLOYED_WEB_URL"
           fi
-
           BUILD_ARGS=""
           if [ -n "$WEB_URL" ]; then
             echo "Building APK against production Web URL: $WEB_URL"
             BUILD_ARGS="-PWEB_APP_URL=$WEB_URL"
-          else
-            echo "No deployment URL available; using Gradle's configured default WEB_APP_URL."
           fi
-
           ./gradlew assembleDebug --no-daemon --stacktrace $BUILD_ARGS
 
       - name: Verify APK Generation & Integrity
@@ -257,7 +234,6 @@ jobs:
           else
             TAG_NAME="v1.0.0-run.${{ github.run_number }}"
           fi
-
           RELEASE_APK="DroidAutomate-Android-${TAG_NAME}.apk"
           cp "build-artifacts/app-debug.apk" "./${RELEASE_APK}"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
