@@ -10,9 +10,10 @@ android {
     defaultConfig {
         applicationId = "com.droidautomate.assistant"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 28
-        versionName = "1.0.28"
+        // Keep the APK broadly installable on Android 11+ while compiling against the current SDK.
+        targetSdk = 33
+        versionCode = 29
+        versionName = "1.0.29"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -20,7 +21,7 @@ android {
         }
 
         // Configurable Web Control Center URL without exposing any secrets
-        val defaultWebUrl = "https://ais-dev-lxuoncy2qvlxpgov2up6ia-274210056589.asia-southeast1.run.app"
+        val defaultWebUrl = "https://ais-dev-lxuoncy2qvlxpgov2up2up6ia-274210056589.asia-southeast1.run.app"
         val resolvedWebUrl = (project.findProperty("WEB_APP_URL") as? String)?.takeIf { it.isNotBlank() } ?: defaultWebUrl
         buildConfigField("String", "WEB_APP_URL", "\"$resolvedWebUrl\"")
     }
