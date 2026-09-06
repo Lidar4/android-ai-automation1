@@ -32,13 +32,36 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build & Verify Android APK
+    name: Build & Verify Web + Android
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Web Dependencies
+        run: npm ci
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Upload Web Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-production-build
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Run Web Typecheck
+        run: npm run lint
 
       - name: Set up Java JDK (Temurin 17)
         uses: actions/setup-java@v4
@@ -58,9 +81,6 @@ jobs:
 
       - name: Run Android Unit Tests
         run: |
-          echo "======================================================="
-          echo "Running Android Unit Tests (ActionValidatorTest)..."
-          echo "======================================================="
           cd android
           ./gradlew testDebugUnitTest --no-daemon --stacktrace
 
@@ -68,9 +88,6 @@ jobs:
         env:
           CUSTOM_WEB_URL: ${{ github.event.inputs.web_app_url }}
         run: |
-          echo "======================================================="
-          echo "Compiling Android Application (assembleDebug)..."
-          echo "======================================================="
           cd android
           BUILD_ARGS=""
           if [ -n "$CUSTOM_WEB_URL" ]; then
@@ -81,29 +98,17 @@ jobs:
 
       - name: Verify APK Generation & Integrity
         run: |
-          echo "======================================================="
-          echo "Verifying APK File Existence & Size..."
-          echo "======================================================="
           APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
-          
           if [ ! -f "$APK_PATH" ]; then
-            echo "::error::CRITICAL ERROR: Expected APK does not exist at path: $APK_PATH"
+            echo "::error::Expected APK does not exist at $APK_PATH"
             exit 1
           fi
-
           FILE_SIZE=$(wc -c < "$APK_PATH")
-          echo "Verified APK exists: $APK_PATH"
-          echo "APK Size: $FILE_SIZE bytes"
-
           if [ "$FILE_SIZE" -lt 100000 ]; then
-            echo "::error::CRITICAL ERROR: Generated APK is unexpectedly small ($FILE_SIZE bytes). Build may be corrupted."
+            echo "::error::Generated APK is unexpectedly small ($FILE_SIZE bytes)"
             exit 1
           fi
-
-          echo "APK_OUTPUT_PATH=$APK_PATH" >> $GITHUB_ENV
-          echo "======================================================="
-          echo "SUCCESS: Real APK generated and verified ($FILE_SIZE bytes)"
-          echo "======================================================="
+          echo "Verified APK: $APK_PATH ($FILE_SIZE bytes)"
 
       - name: Upload APK as GitHub Actions Artifact
         uses: actions/upload-artifact@v4
@@ -117,9 +122,10 @@ jobs:
     name: Publish GitHub Release
     needs: build-and-test
     if: >-
-      (startsWith(github.ref, 'refs/tags/v') ||
-       github.event.inputs.create_release == 'true' ||
-       github.event.inputs.create_release == true)
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event.inputs.create_release == 'true' ||
+      github.event.inputs.create_release == true
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -136,15 +142,13 @@ jobs:
       - name: Verify Downloaded Artifact
         run: |
           if [ ! -f "build-artifacts/app-debug.apk" ]; then
-            echo "::error::Downloaded artifact app-debug.apk not found!"
+            echo "::error::Downloaded app-debug.apk not found"
             exit 1
           fi
-          echo "Artifact verified: $(ls -lh build-artifacts/app-debug.apk)"
 
-      - name: Resolve Release Tag & Prepare Formatted APK
+      - name: Resolve Release Tag & Prepare APK
         id: release_info
         run: |
-          # Determine release tag name
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           elif [ -n "${{ github.event.inputs.release_tag }}" ]; then
@@ -155,10 +159,8 @@ jobs:
 
           RELEASE_APK="DroidAutomate-Android-${TAG_NAME}.apk"
           cp "build-artifacts/app-debug.apk" "./${RELEASE_APK}"
-
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "apk_filename=${RELEASE_APK}" >> $GITHUB_OUTPUT
-          echo "Prepared release asset: ${RELEASE_APK} (Tag: ${TAG_NAME})"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "apk_filename=${RELEASE_APK}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -166,17 +168,15 @@ jobs:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
           name: "DroidAutomate Assistant ${{ steps.release_info.outputs.tag_name }}"
           body: |
-            ## DroidAutomate Android AI Automation Assistant - ${{ steps.release_info.outputs.tag_name }}
+            ## DroidAutomate Android AI Automation Assistant
 
-            ### 📦 Release Artifact
-            - **`${{ steps.release_info.outputs.apk_filename }}`**: Standalone native Android client APK.
+            This release was generated automatically from the `main` branch after web build, typecheck, Android unit tests, and APK integrity verification succeeded.
 
-            ### 🔒 Architecture & Security Verification
-            - **Strict Security Flow:** AI decides WHAT -> ActionValidator decides WHETHER -> Android executes HOW.
-            - **Zero Prohibited Commands:** Arbitrary shell, root (su), and ADB execution are permanently blocked.
-            - **Zero Secrets In APK:** API keys (Gemini, etc.) remain strictly on the backend server and are never bundled into the APK.
-            - **Allowlist Enforced:** Only the 12 allowlisted system intents and device control APIs are permissible.
-            - **Automated Validation:** Verified through unit testing and Gradle automated build.
+            ### Security
+            - AI decides WHAT -> ActionValidator decides WHETHER -> Android executes HOW.
+            - Arbitrary shell, root/su, and ADB execution are blocked.
+            - Gemini/API secrets are not bundled into the APK.
+            - Only the allowlisted Android actions are executable.
           files: |
             ${{ steps.release_info.outputs.apk_filename }}
           draft: false
