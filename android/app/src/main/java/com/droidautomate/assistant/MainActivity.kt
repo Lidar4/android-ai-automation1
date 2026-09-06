@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.webkit.ConsoleMessage
@@ -29,43 +31,59 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "DroidAutomateApp"
         val WEB_APP_URL: String = BuildConfig.WEB_APP_URL
         private const val PERMISSION_REQUEST_CODE = 1001
+        private const val REMOTE_LOAD_TIMEOUT_MS = 10000L
     }
 
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private lateinit var errorContainer: FrameLayout
     private lateinit var errorTextView: TextView
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var offlineFallbackShown = false
+    private var remoteLoadTimedOut = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val rootLayout = FrameLayout(this).apply { setBackgroundColor(0xFF0F172A.toInt()) }
+        val rootLayout = FrameLayout(this).apply { setBackgroundColor(0xFF020617.toInt()) }
         webView = WebView(this).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            setBackgroundColor(0xFF0F172A.toInt())
+            setBackgroundColor(0xFF020617.toInt())
         }
         rootLayout.addView(webView)
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 8)
-            max = 100; progress = 0; visibility = View.VISIBLE
+            max = 100
+            progress = 0
+            visibility = View.VISIBLE
         }
         rootLayout.addView(progressBar)
         errorContainer = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            setBackgroundColor(0xFF0F172A.toInt()); visibility = View.GONE
+            setBackgroundColor(0xFF020617.toInt())
+            visibility = View.GONE
             errorTextView = TextView(this@MainActivity).apply {
-                setTextColor(0xFFF87171.toInt()); textSize = 14f; textAlignment = View.TEXT_ALIGNMENT_CENTER
-                text = "Connecting to Automation Control Center..."
+                setTextColor(0xFFF87171.toInt())
+                textSize = 14f
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                text = "Connecting..."
+                setPadding(40, 40, 40, 40)
             }
             addView(errorTextView)
         }
         rootLayout.addView(errorContainer)
         setContentView(rootLayout)
+
         checkAndRequestPermissions()
         configureWebView()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView.canGoBack()) webView.goBack() else { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
+                if (!offlineFallbackShown && webView.canGoBack()) {
+                    webView.goBack()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
             }
         })
         loadWebControlCenter()
@@ -82,7 +100,9 @@ class MainActivity : AppCompatActivity() {
         settings.setSupportZoom(false)
         settings.builtInZoomControls = false
         settings.displayZoomControls = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        }
         settings.userAgentString = "${settings.userAgentString} DroidAutomateBridge/1.0.0 (Android Native APK)"
 
         val bridge = AndroidBridge(this, webView)
@@ -90,24 +110,32 @@ class MainActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                progressBar.visibility = View.VISIBLE; errorContainer.visibility = View.GONE
+                if (!offlineFallbackShown) {
+                    progressBar.visibility = View.VISIBLE
+                    errorContainer.visibility = View.GONE
+                }
                 super.onPageStarted(view, url, favicon)
             }
+
             override fun onPageFinished(view: WebView?, url: String?) {
-                progressBar.visibility = View.GONE; super.onPageFinished(view, url)
+                if (!offlineFallbackShown) {
+                    progressBar.visibility = View.GONE
+                    errorContainer.visibility = View.GONE
+                    remoteLoadTimedOut = false
+                }
+                super.onPageFinished(view, url)
             }
+
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-                if (request?.isForMainFrame == true) {
-                    progressBar.visibility = View.GONE; errorContainer.visibility = View.VISIBLE
-                    errorTextView.text = "Failed to load Control Center (${error?.description ?: "Network Unavailable"}).\nTap to retry."
-                    errorContainer.setOnClickListener { loadWebControlCenter() }
+                if (request?.isForMainFrame == true && !offlineFallbackShown) {
+                    Log.w(TAG, "Remote Control Center failed: ${error?.description}")
+                    showOfflineFallback("The online Control Center is unavailable. Offline-safe native mode is active.")
                 }
                 super.onReceivedError(view, request, error)
             }
+
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val uri = request?.url ?: return true
-                // Only the configured HTTPS origin may be loaded in this WebView.
-                // This protects the native JavaScript bridge from untrusted pages.
                 if (uri.scheme != "https") return true
                 val trusted = Uri.parse(WEB_APP_URL)
                 val sameOrigin = uri.scheme == trusted.scheme &&
@@ -116,12 +144,16 @@ class MainActivity : AppCompatActivity() {
                 return !sameOrigin
             }
         }
+
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                progressBar.progress = newProgress
-                if (newProgress >= 100) progressBar.visibility = View.GONE
+                if (!offlineFallbackShown) {
+                    progressBar.progress = newProgress
+                    if (newProgress >= 100) progressBar.visibility = View.GONE
+                }
                 super.onProgressChanged(view, newProgress)
             }
+
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                 Log.d(TAG, "[WebView Console] ${consoleMessage?.message()}")
                 return true
@@ -130,23 +162,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadWebControlCenter() {
+        offlineFallbackShown = false
+        remoteLoadTimedOut = false
         val uri = Uri.parse(WEB_APP_URL)
         if (uri.scheme != "https" || uri.host.isNullOrBlank()) {
-            errorContainer.visibility = View.VISIBLE
-            errorTextView.text = "Invalid or insecure WEB_APP_URL. Configure an HTTPS Control Center URL."
+            showOfflineFallback("Invalid online Control Center URL. Offline-safe native mode is active.")
             return
         }
+
+        progressBar.visibility = View.VISIBLE
+        errorContainer.visibility = View.GONE
         webView.loadUrl(WEB_APP_URL)
+
+        mainHandler.removeCallbacksAndMessages(null)
+        mainHandler.postDelayed({
+            if (!offlineFallbackShown && !remoteLoadTimedOut) {
+                remoteLoadTimedOut = true
+                Log.w(TAG, "Remote Control Center timed out after ${REMOTE_LOAD_TIMEOUT_MS}ms")
+                showOfflineFallback("Online Control Center did not respond in time. Offline-safe native mode is active.")
+            }
+        }, REMOTE_LOAD_TIMEOUT_MS)
+    }
+
+    private fun showOfflineFallback(reason: String) {
+        if (offlineFallbackShown) return
+        offlineFallbackShown = true
+        progressBar.visibility = View.GONE
+        errorContainer.visibility = View.GONE
+        mainHandler.removeCallbacksAndMessages(null)
+        webView.stopLoading()
+        webView.loadUrl("file:///android_asset/offline/index.html")
+        Log.i(TAG, "Offline fallback enabled: $reason")
     }
 
     private fun checkAndRequestPermissions() {
         val required = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) required.add(Manifest.permission.CAMERA)
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) required.add(Manifest.permission.RECORD_AUDIO)
-        if (required.isNotEmpty()) ActivityCompat.requestPermissions(this, required.toTypedArray(), PERMISSION_REQUEST_CODE)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            required.add(Manifest.permission.CAMERA)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            required.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (required.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, required.toTypedArray(), PERMISSION_REQUEST_CODE)
+        }
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
         webView.removeJavascriptInterface("androidBridge")
         webView.destroy()
         super.onDestroy()
