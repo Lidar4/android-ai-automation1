@@ -17,24 +17,28 @@ on:
         type: boolean
         default: false
       release_tag:
-        description: 'Custom release tag (e.g. v1.0.0). Defaults to push tag or v1.0.0-run.<run_number>'
+        description: 'Custom release tag (e.g. v1.0.0)'
         required: false
         type: string
         default: ''
       web_app_url:
-        description: 'Override WEB_APP_URL for the APK (defaults to production Control Center URL)'
+        description: 'Override WEB_APP_URL for the APK (normally uses the deployed Cloud Run URL)'
         required: false
         type: string
         default: ''
+
+env:
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: droidautomate-assistant
 
 permissions:
   contents: write
 
 jobs:
   build-and-test:
-    name: Build & Verify Web + Android
+    name: Build, Deploy Web + Verify Android
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout Repository
@@ -52,6 +56,9 @@ jobs:
       - name: Build Web Application
         run: npm run build
 
+      - name: Run Web Typecheck
+        run: npm run lint
+
       - name: Upload Web Build Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -60,8 +67,91 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Run Web Typecheck
-        run: npm run lint
+      # Production deployment is enabled for main/tags. It requires one-time
+      # GitHub configuration: GCP_SA_KEY secret and GCP_PROJECT_ID variable.
+      - name: Authenticate to Google Cloud
+        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Google Cloud SDK
+        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy Web + Backend to Cloud Run
+        id: cloud_run
+        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GCP_PROJECT_ID" ]; then
+            echo "::error::GitHub Actions variable GCP_PROJECT_ID is not configured."
+            exit 1
+          fi
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::warning::GEMINI_API_KEY secret is not configured. The deployed app will use its safe fallback planner."
+          fi
+
+          gcloud config set project "$GCP_PROJECT_ID"
+
+          ENV_ARGS=""
+          if [ -n "$GEMINI_API_KEY" ]; then
+            ENV_ARGS="--set-env-vars=GEMINI_API_KEY=$GEMINI_API_KEY"
+          fi
+          if [ -n "$GEMINI_MODEL" ]; then
+            if [ -n "$ENV_ARGS" ]; then
+              ENV_ARGS="$ENV_ARGS,GEMINI_MODEL=$GEMINI_MODEL"
+            else
+              ENV_ARGS="--set-env-vars=GEMINI_MODEL=$GEMINI_MODEL"
+            fi
+          fi
+
+          if [ -n "$ENV_ARGS" ]; then
+            SERVICE_URL=$(gcloud run deploy "$CLOUD_RUN_SERVICE" \
+              --source . \
+              --region "$GCP_REGION" \
+              --platform managed \
+              --allow-unauthenticated \
+              --port 3000 \
+              "$ENV_ARGS" \
+              --format='value(status.url)')
+          else
+            SERVICE_URL=$(gcloud run deploy "$CLOUD_RUN_SERVICE" \
+              --source . \
+              --region "$GCP_REGION" \
+              --platform managed \
+              --allow-unauthenticated \
+              --port 3000 \
+              --format='value(status.url)')
+          fi
+
+          if [ -z "$SERVICE_URL" ]; then
+            echo "::error::Cloud Run did not return a service URL."
+            exit 1
+          fi
+
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed production Web + Backend: $SERVICE_URL"
+
+      - name: Check deployed health endpoint
+        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          SERVICE_URL: ${{ steps.cloud_run.outputs.service_url }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            if curl --fail --silent --show-error "$SERVICE_URL/api/health"; then
+              echo
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Cloud Run health endpoint did not become ready."
+          exit 1
 
       - name: Set up Java JDK (Temurin 17)
         uses: actions/setup-java@v4
@@ -87,13 +177,23 @@ jobs:
       - name: Build Debug Android APK
         env:
           CUSTOM_WEB_URL: ${{ github.event.inputs.web_app_url }}
+          DEPLOYED_WEB_URL: ${{ steps.cloud_run.outputs.service_url }}
         run: |
+          set -euo pipefail
           cd android
-          BUILD_ARGS=""
-          if [ -n "$CUSTOM_WEB_URL" ]; then
-            echo "Applying custom WEB_APP_URL parameter: $CUSTOM_WEB_URL"
-            BUILD_ARGS="-PWEB_APP_URL=$CUSTOM_WEB_URL"
+          WEB_URL="$CUSTOM_WEB_URL"
+          if [ -z "$WEB_URL" ]; then
+            WEB_URL="$DEPLOYED_WEB_URL"
           fi
+
+          BUILD_ARGS=""
+          if [ -n "$WEB_URL" ]; then
+            echo "Building APK against production Web URL: $WEB_URL"
+            BUILD_ARGS="-PWEB_APP_URL=$WEB_URL"
+          else
+            echo "No deployment URL available; using Gradle's configured default WEB_APP_URL."
+          fi
+
           ./gradlew assembleDebug --no-daemon --stacktrace $BUILD_ARGS
 
       - name: Verify APK Generation & Integrity
@@ -108,6 +208,7 @@ jobs:
             echo "::error::Generated APK is unexpectedly small ($FILE_SIZE bytes)"
             exit 1
           fi
+          sha256sum "$APK_PATH"
           echo "Verified APK: $APK_PATH ($FILE_SIZE bytes)"
 
       - name: Upload APK as GitHub Actions Artifact
@@ -170,7 +271,7 @@ jobs:
           body: |
             ## DroidAutomate Android AI Automation Assistant
 
-            This release was generated automatically from the `main` branch after web build, typecheck, Android unit tests, and APK integrity verification succeeded.
+            Automatically generated from `main` after web build/deployment, health verification, typecheck, Android unit tests, and APK integrity verification succeeded.
 
             ### Security
             - AI decides WHAT -> ActionValidator decides WHETHER -> Android executes HOW.
