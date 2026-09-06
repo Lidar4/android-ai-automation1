@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "no | yes |" | avdmanager create avd -n android11-test -k "system-images;android-30;google_apis;x86_64" --force
+          echo "no" | avdmanager create avd -n android11-test -k "system-images;android-30;google_apis;x86_64" --force
           "$ANDROID_HOME/emulator/emulator" -avd android11-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > emulator.log 2>&1 &
           EMULATOR_PID=$!
           trap 'adb emu kill >/dev/null 2>&1 || true; kill "$EMULATOR_PID" >/dev/null 2>&1 || true' EXIT
