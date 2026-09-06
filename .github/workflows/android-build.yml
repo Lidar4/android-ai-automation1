@@ -70,11 +70,12 @@ jobs:
           grep -F "application-icon-" <<<"$BADGING"
 
           echo "== Forbidden Android 14-only specialUse entries =="
-          XMLTREE="$("$BUILD_TOOLS/aapt2" dump xmltree "$OUT" AndroidManifest.xml)"
+          XMLTREE="$("$BUILD_TOOLS/aapt2" dump xmltree "$OUT" --file AndroidManifest.xml 2>/dev/null || true)"
           if grep -E "FOREGROUND_SERVICE_SPECIAL_USE|PROPERTY_SPECIAL_USE_FGS_SUBTYPE|android:foregroundServiceType.*specialUse" <<<"$XMLTREE"; then
             echo "ERROR: Android 14-only specialUse manifest entry is present"
             exit 1
           fi
+          echo "No forbidden specialUse manifest entries found."
 
           echo "== APK ABI check =="
           if unzip -l "$OUT" | grep -qE '(^|[[:space:]])lib/'; then
@@ -114,6 +115,8 @@ jobs:
             echo "== Package installer diagnostics =="
             adb shell dumpsys package com.droidautomate.assistant | head -120 || true
             adb logcat -d -t 500 | grep -Ei "PackageInstaller|PackageManager|INSTALL_FAILED|com.droidautomate.assistant" | tail -n 120 || true
+            echo "== Emulator log =="
+            tail -n 200 emulator.log || true
             exit "$INSTALL_EXIT"
           fi
           echo "== Package =="
