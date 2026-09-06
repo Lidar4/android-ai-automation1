@@ -64,7 +64,7 @@ jobs:
           BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$OUT")"
           echo "$BADGING"
           grep -F "package: name='com.droidautomate.assistant'" <<<"$BADGING"
-          grep -F "sdkVersion:'26'" <<<"$BADGING"
+          grep -F "minSdkVersion:'26'" <<<"$BADGING"
           grep -F "targetSdkVersion:'33'" <<<"$BADGING"
           grep -F "application-label:'Android AI Assistant'" <<<"$BADGING"
           grep -F "application-icon-" <<<"$BADGING"
