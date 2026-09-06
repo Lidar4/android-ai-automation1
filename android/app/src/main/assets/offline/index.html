@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Android AI Automation</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#020617;color:#e2e8f0;font-family:system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:760px;margin:auto;padding:20px}.card{background:#0f172a;border:1px solid #1e293b;border-radius:20px;padding:18px;margin-bottom:14px}.head{display:flex;gap:12px;align-items:center}.logo{width:44px;height:44px;border-radius:14px;background:#10b98122;border:1px solid #10b98155;display:grid;place-items:center;font-size:22px}.muted{color:#94a3b8;font-size:13px}.ok{color:#34d399}.bad{color:#fb7185}.row{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid #334155;background:#1e293b;color:#e2e8f0;border-radius:12px;padding:10px 12px;cursor:pointer}.btn.primary{background:#10b981;color:#022c22;border-color:#10b981;font-weight:700}input{width:100%;padding:13px;border-radius:12px;border:1px solid #334155;background:#020617;color:#fff;outline:none}.log{white-space:pre-wrap;background:#020617;border:1px solid #1e293b;border-radius:12px;padding:12px;font:12px ui-monospace,monospace;min-height:80px}.tag{display:inline-block;padding:4px 8px;border-radius:999px;background:#064e3b;color:#6ee7b7;font-size:11px;margin-top:6px}
+</style>
+</head>
+<body><main>
+<div class="card"><div class="head"><div class="logo">✦</div><div><h2 style="margin:0">Android AI Automation</h2><div class="muted">Offline-safe control center · Native Android Bridge</div><div class="tag">REAL DEVICE MODE</div></div></div></div>
+<div class="card"><div class="muted">বাংলায় বা ইংরেজিতে কমান্ড লিখুন। AI service unavailable হলেও নিরাপদ allowlist planner কাজ করবে।</div><div style="height:10px"></div><input id="prompt" placeholder="যেমন: brightness 30, Wi-Fi settings, flashlight on"><div style="height:10px"></div><button class="btn primary" onclick="runPrompt()">Run safely</button></div>
+<div class="card"><div class="muted" style="margin-bottom:10px">Quick actions</div><div class="row"><button class="btn" onclick="run('get_device_info',{})">Device info</button><button class="btn" onclick="run('get_battery_status',{})">Battery</button><button class="btn" onclick="run('get_network_status',{})">Network</button><button class="btn" onclick="run('open_wifi_settings',{})">Wi-Fi</button><button class="btn" onclick="run('open_bluetooth_settings',{})">Bluetooth</button><button class="btn" onclick="run('toggle_flashlight',{enabled:true})">Flashlight ON</button><button class="btn" onclick="run('set_brightness',{level:30})">Brightness 30%</button><button class="btn" onclick="run('set_volume',{level:30,stream_type:'music'})">Volume 30%</button></div></div>
+<div class="card"><div class="muted">Result</div><div id="log" class="log">Ready.</div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function write(v){$('log').textContent=typeof v==='string'?v:JSON.stringify(v,null,2)}
+function plan(t){const p=t.toLowerCase();const n=(p.match(/\b(100|[1-9][0-9]|[0-9])\b/)||[])[1];if(/wifi|wi-fi|ওয়াইফাই|ওয়াইফাই/.test(p))return ['open_wifi_settings',{}];if(/bluetooth|ব্লুটুথ/.test(p))return ['open_bluetooth_settings',{}];if(/flashlight|torch|টর্চ/.test(p))return ['toggle_flashlight',{enabled:!(/off|বন্ধ/.test(p))}];if(/battery|চার্জ|ব্যাটারি/.test(p))return ['get_battery_status',{}];if(/network|internet|signal|নেটওয়ার্ক|নেটওয়ার্ক/.test(p))return ['get_network_status',{}];if(/volume|sound|audio|শব্দ|আওয়াজ/.test(p))return ['set_volume',{level:Math.max(0,Math.min(100,Number(n??40))),stream_type:'music'}];if(/bright|brightness|screen|আলো|স্ক্রিন/.test(p))return ['set_brightness',{level:Math.max(1,Math.min(100,Number(n??30)))}];if(/app settings|permissions|অ্যাপ সেটিং/.test(p))return ['open_app_settings',{}];return ['get_device_info',{}]}
+function run(tool,args){try{if(!window.androidBridge){write('Android Bridge unavailable.');return}const raw=window.androidBridge.execute(tool,JSON.stringify(args));write(JSON.parse(raw));}catch(e){write('Execution error: '+e.message)}}
+function runPrompt(){const t=$('prompt').value.trim();if(!t)return;const [tool,args]=plan(t);write('Planning: '+tool+'\n\n');setTimeout(()=>run(tool,args),50)}
+$('prompt').addEventListener('keydown',e=>{if(e.key==='Enter')runPrompt()});
+</script></body></html>
