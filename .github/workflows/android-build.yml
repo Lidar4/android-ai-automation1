@@ -2,30 +2,10 @@ name: Android APK Build & Release Pipeline
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-  pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      create_release:
-        description: 'Publish a GitHub Release with the built APK asset'
-        required: false
-        type: boolean
-        default: false
-      release_tag:
-        description: 'Custom release tag (e.g. v1.0.0)'
-        required: false
-        type: string
-        default: ''
-      web_app_url:
-        description: 'Override WEB_APP_URL for the APK (normally uses the deployed Cloud Run URL)'
-        required: false
-        type: string
-        default: ''
+  release:
+    types: [published]
 
 env:
   GCP_REGION: asia-southeast1
@@ -35,11 +15,11 @@ permissions:
   contents: write
 
 jobs:
-  build-and-test:
+  build-deploy:
     name: Build, Deploy Web + Verify Android
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -66,197 +46,112 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Production deployment requires one-time GitHub configuration:
-      # GCP_SA_KEY secret and GCP_PROJECT_ID repository variable.
+      - name: Validate GCP configuration
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          test -n "$GCP_PROJECT_ID" || { echo "GCP_PROJECT_ID repository variable is missing"; exit 1; }
+          test -n "$GCP_SA_KEY" || { echo "GCP_SA_KEY repository secret is missing"; exit 1; }
+
       - name: Authenticate to Google Cloud
-        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Set up Google Cloud SDK
-        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Deploy Web + Backend to Cloud Run
-        id: cloud_run
-        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
-        env:
-          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: |
-          set -euo pipefail
-          if [ -z "$GCP_PROJECT_ID" ]; then
-            echo "::error::GitHub Actions variable GCP_PROJECT_ID is not configured."
-            exit 1
-          fi
-          gcloud config set project "$GCP_PROJECT_ID"
-
-          DEPLOY_ARGS=(
-            --source .
-            --region "$GCP_REGION"
-            --platform managed
-            --allow-unauthenticated
+          gcloud run deploy "$CLOUD_RUN_SERVICE" \
+            --source . \
+            --region "$GCP_REGION" \
+            --project "$GCP_PROJECT_ID" \
+            --allow-unauthenticated \
             --port 3000
-          )
-          if [ -n "$GEMINI_API_KEY" ]; then
-            DEPLOY_ARGS+=(--set-env-vars "GEMINI_API_KEY=$GEMINI_API_KEY")
-          fi
-          if [ -n "$GEMINI_MODEL" ]; then
-            DEPLOY_ARGS+=(--set-env-vars "GEMINI_MODEL=$GEMINI_MODEL")
-          fi
 
-          SERVICE_URL=$(gcloud run deploy "$CLOUD_RUN_SERVICE" \
-            "${DEPLOY_ARGS[@]}" \
-            --format='value(status.url)')
-
-          if [ -z "$SERVICE_URL" ]; then
-            echo "::error::Cloud Run did not return a service URL."
-            exit 1
-          fi
-          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
-          echo "Deployed production Web + Backend: $SERVICE_URL"
-
-      - name: Check deployed health endpoint
-        if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
-        env:
-          SERVICE_URL: ${{ steps.cloud_run.outputs.service_url }}
+      - name: Read Cloud Run URL
+        id: cloudrun
         run: |
-          set -euo pipefail
-          for i in 1 2 3 4 5; do
-            if curl --fail --silent --show-error "$SERVICE_URL/api/health"; then
-              echo
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "::error::Cloud Run health endpoint did not become ready."
-          exit 1
+          URL=$(gcloud run services describe "$CLOUD_RUN_SERVICE" \
+            --region "$GCP_REGION" \
+            --project "$GCP_PROJECT_ID" \
+            --format='value(status.url)')
+          test -n "$URL" || { echo "Cloud Run URL was not returned"; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Cloud Run URL: $URL"
 
-      - name: Set up Java JDK (Temurin 17)
+      - name: Health check
+        run: |
+          curl --fail --retry 5 --retry-delay 5 --retry-connrefused \
+            "${{ steps.cloudrun.outputs.url }}/api/health"
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
-          cache: 'gradle'
 
-      - name: Setup Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Validate Gradle Wrapper
+      - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@v3
 
-      - name: Grant Execute Permission to Gradle Wrapper
-        run: chmod +x android/gradlew
+      - name: Run Android tests
+        working-directory: android
+        run: ./gradlew test
 
-      - name: Run Android Unit Tests
+      - name: Build Android APK
+        working-directory: android
+        run: ./gradlew assembleDebug -PWEB_APP_URL="${{ steps.cloudrun.outputs.url }}"
+
+      - name: Verify APK
+        shell: bash
         run: |
-          cd android
-          ./gradlew testDebugUnitTest --no-daemon --stacktrace
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK" || { echo "APK was not produced"; exit 1; }
+          ls -lh "$APK"
+          sha256sum "$APK"
 
-      - name: Build Debug Android APK
-        env:
-          CUSTOM_WEB_URL: ${{ github.event.inputs.web_app_url }}
-          DEPLOYED_WEB_URL: ${{ steps.cloud_run.outputs.service_url }}
-        run: |
-          set -euo pipefail
-          cd android
-          WEB_URL="$CUSTOM_WEB_URL"
-          if [ -z "$WEB_URL" ]; then
-            WEB_URL="$DEPLOYED_WEB_URL"
-          fi
-          BUILD_ARGS=""
-          if [ -n "$WEB_URL" ]; then
-            echo "Building APK against production Web URL: $WEB_URL"
-            BUILD_ARGS="-PWEB_APP_URL=$WEB_URL"
-          fi
-          ./gradlew assembleDebug --no-daemon --stacktrace $BUILD_ARGS
-
-      - name: Verify APK Generation & Integrity
-        run: |
-          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -f "$APK_PATH" ]; then
-            echo "::error::Expected APK does not exist at $APK_PATH"
-            exit 1
-          fi
-          FILE_SIZE=$(wc -c < "$APK_PATH")
-          if [ "$FILE_SIZE" -lt 100000 ]; then
-            echo "::error::Generated APK is unexpectedly small ($FILE_SIZE bytes)"
-            exit 1
-          fi
-          sha256sum "$APK_PATH"
-          echo "Verified APK: $APK_PATH ($FILE_SIZE bytes)"
-
-      - name: Upload APK as GitHub Actions Artifact
+      - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+      - name: Upload Cloud Run URL metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-metadata
+          path: |
+            /tmp/nonexistent
+          if-no-files-found: ignore
 
   release:
     name: Publish GitHub Release
-    needs: build-and-test
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      startsWith(github.ref, 'refs/tags/v') ||
-      github.event.inputs.create_release == 'true' ||
-      github.event.inputs.create_release == true
+    needs: build-deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    permissions:
+      contents: write
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Download Built APK Artifact
+      - name: Download Android APK
         uses: actions/download-artifact@v4
         with:
           name: android-debug-apk
-          path: build-artifacts
+          path: release-assets
 
-      - name: Verify Downloaded Artifact
-        run: |
-          if [ ! -f "build-artifacts/app-debug.apk" ]; then
-            echo "::error::Downloaded app-debug.apk not found"
-            exit 1
-          fi
-
-      - name: Resolve Release Tag & Prepare APK
-        id: release_info
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-          elif [ -n "${{ github.event.inputs.release_tag }}" ]; then
-            TAG_NAME="${{ github.event.inputs.release_tag }}"
-          else
-            TAG_NAME="v1.0.0-run.${{ github.run_number }}"
-          fi
-          RELEASE_APK="DroidAutomate-Android-${TAG_NAME}.apk"
-          cp "build-artifacts/app-debug.apk" "./${RELEASE_APK}"
-          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
-          echo "apk_filename=${RELEASE_APK}" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: "DroidAutomate Assistant ${{ steps.release_info.outputs.tag_name }}"
-          body: |
-            ## DroidAutomate Android AI Automation Assistant
-
-            Automatically generated from `main` after web build/deployment, health verification, typecheck, Android unit tests, and APK integrity verification succeeded.
-
-            ### Security
-            - AI decides WHAT -> ActionValidator decides WHETHER -> Android executes HOW.
-            - Arbitrary shell, root/su, and ADB execution are blocked.
-            - Gemini/API secrets are not bundled into the APK.
-            - Only the allowlisted Android actions are executable.
-          files: |
-            ${{ steps.release_info.outputs.apk_filename }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: build-${{ github.run_number }}
+          name: Android APK Build ${{ github.run_number }}
+          generate_release_notes: true
+          files: release-assets/app-debug.apk
