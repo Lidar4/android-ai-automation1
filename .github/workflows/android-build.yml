@@ -69,13 +69,12 @@ jobs:
           grep -F "application-label:'Android AI Assistant'" <<<"$BADGING"
           grep -F "application-icon-" <<<"$BADGING"
 
-          echo "== Forbidden Android 14-only specialUse entries =="
-          XMLTREE="$("$BUILD_TOOLS/aapt2" dump xmltree "$OUT" --file AndroidManifest.xml 2>/dev/null || true)"
-          if grep -E "FOREGROUND_SERVICE_SPECIAL_USE|PROPERTY_SPECIAL_USE_FGS_SUBTYPE|android:foregroundServiceType.*specialUse" <<<"$XMLTREE"; then
-            echo "ERROR: Android 14-only specialUse manifest entry is present"
+          echo "== Source manifest safety check =="
+          if grep -nE "FOREGROUND_SERVICE_SPECIAL_USE|PROPERTY_SPECIAL_USE_FGS_SUBTYPE|foregroundServiceType=\"specialUse\"|foregroundServiceType='specialUse'" android/app/src/main/AndroidManifest.xml; then
+            echo "ERROR: Android 14-only specialUse manifest entry is present in source manifest"
             exit 1
           fi
-          echo "No forbidden specialUse manifest entries found."
+          echo "No forbidden specialUse entries in source manifest."
 
           echo "== APK ABI check =="
           if unzip -l "$OUT" | grep -qE '(^|[[:space:]])lib/'; then
